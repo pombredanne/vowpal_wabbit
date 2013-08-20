@@ -336,4 +336,7 @@ vw::vw()
   do_reset_source = false;
 
   max_examples = (size_t)-1;
+
+  model_to_stdout = false;
+  feature_name_map = NULL;
 }

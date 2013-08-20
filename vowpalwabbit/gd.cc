@@ -123,6 +123,7 @@ void learn(void* d, example* ec)
   vw* all = g->all;
 
   assert(ec->in_use);
+
   if (ec->end_pass)
     {
       sync_weights(*all);
@@ -723,6 +724,41 @@ void save_load(void* data, io_buf& model_file, bool read, bool text)
     }
 }
 
+void print_model_as_json(void* data, example* superex)
+{
+  gd* g = (gd*) data;
+  vw* all = g->all;
+  weight* weights = all->reg.weight_vector;
+  //size_t stride = all->reg.stride;
+
+  printf("{");
+
+  bool first_feature = true;
+  for (unsigned char* i = superex->indices.begin; i != superex->indices.end; i++) {
+    v_array<feature>& fs = superex->atomics[*i];
+    v_array<audit_data>& as = superex->audit_features[*i];
+
+    for (size_t j = 0; j< fs.size(); j++) {
+      feature *f = &(fs[j]);
+      audit_data *a = &(as[j]);
+      size_t index = f->weight_index & all->reg.weight_mask;
+      // int value in model is: index/stride & all->parse_mask
+
+      if (!first_feature)
+        printf(",");
+      else
+        first_feature = false;
+
+      if (a != NULL)
+        printf("%s^%s:%f", a->space, a->feature, weights[index]);
+      else
+        printf("Constant:%f", weights[index]);
+    }
+  }
+
+  printf("}\n");
+}
+
 void driver(vw* all, void* data)
 {
   example* ec = NULL;
@@ -749,7 +785,7 @@ learner setup(vw& all)
   g->active_simulation = all.active_simulation;
   g->normalized_sum_norm_x = all.normalized_sum_norm_x;
 
-  sl_t sl = {g,save_load};
+  sl_t sl = {g,save_load,print_model_as_json};
   learner ret(g,driver,learn,finish,sl);
 
   return ret;

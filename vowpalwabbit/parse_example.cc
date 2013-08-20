@@ -6,6 +6,7 @@ license as described in the file LICENSE.
 
 #include <math.h>
 #include <ctype.h>
+#include <stdio.h>
 #include "parse_example.h"
 #include "hash.h"
 #include "cache.h"
@@ -74,6 +75,8 @@ public:
   parser* p;
   example* ae;
   uint32_t weights_per_problem;
+  bool model_to_stdout;
+  v_hashmap< v_array<char>, v_hashmap<size_t, v_array<char> >* > *feature_name_map;
   
   ~TC_parser(){ }
   
@@ -112,27 +115,53 @@ public:
   
   inline void maybeFeature(){
     if(*reading_head == ' ' || *reading_head == '\t' || *reading_head == '|'|| reading_head == endLine || *reading_head == '\r' ){
-      // maybeFeature --> ø
-    }else {
-      // maybeFeature --> 'String' FeatureValue
-      substring feature_name=read_name();
-      v = cur_channel_v * featureValue();
-      size_t word_hash;
-      if (feature_name.end != feature_name.begin)
-	word_hash = (p->hasher(feature_name,(uint32_t)channel_hash));
-      else
-	word_hash = channel_hash + anon++;
-      if(v == 0) return; //dont add 0 valued features to list of features
-      feature f = {v,(uint32_t)word_hash * weights_per_problem};
-      ae->sum_feat_sq[index] += v*v;
-      ae->atomics[index].push_back(f);
-      if(audit){
-	v_array<char> feature_v;
-	push_many(feature_v, feature_name.begin, feature_name.end - feature_name.begin);
-	feature_v.push_back('\0');
-	audit_data ad = {copy(base),feature_v.begin,word_hash,v,true};
-	ae->audit_features[index].push_back(ad);
-      }
+        // maybeFeature --> ø
+    } else {
+        // maybeFeature --> 'String' FeatureValue
+        substring feature_name=read_name();
+        v = cur_channel_v * featureValue();
+
+        size_t word_hash;
+        if (feature_name.end != feature_name.begin)
+            word_hash = (p->hasher(feature_name,(uint32_t)channel_hash));
+        else
+            word_hash = channel_hash + anon++;
+
+        if(v == 0) return; //dont add 0 valued features to list of features
+
+        feature f = {v,(uint32_t)word_hash * weights_per_problem};
+        ae->sum_feat_sq[index] += v*v;
+        ae->atomics[index].push_back(f);
+
+        if(audit) {
+            v_array<char> feature_v;
+            push_many(feature_v, feature_name.begin, feature_name.end - feature_name.begin);
+            feature_v.push_back('\0');
+            audit_data ad = {copy(base),feature_v.begin,word_hash,v,true};
+            ae->audit_features[index].push_back(ad);
+        }
+
+        if (model_to_stdout) {
+            v_array<char> ns_str;
+            push_many(ns_str, base, strlen(base));
+            ns_str.push_back('\0');
+
+            v_array<char> fn_str;
+            push_many(fn_str, feature_name.begin, feature_name.end - feature_name.begin);
+            fn_str.push_back('\0');
+
+            v_hashmap<size_t, v_array<char> >* ns = feature_name_map->get(ns_str, channel_hash);
+            if (ns == NULL) {
+                v_array<char> empty_str;
+                ns = new v_hashmap<size_t, v_array<char> >(256, empty_str, NULL);
+                ns->put(word_hash, word_hash, fn_str);
+                feature_name_map->put_after_get(ns_str, channel_hash, ns);
+            } else {
+                if (!ns->contains(word_hash, word_hash)) {
+                    ns->put(word_hash, word_hash, fn_str);
+                }
+            }
+        }
     }
   }
   
@@ -168,7 +197,7 @@ public:
       if(ae->atomics[index].begin == ae->atomics[index].end)
 	new_index = true;
       substring name = read_name();
-      if(audit){
+      if(audit || model_to_stdout){
 	v_array<char> base_v_array;
 	push_many(base_v_array, name.begin, name.end - name.begin);
 	base_v_array.push_back('\0');
@@ -244,6 +273,8 @@ public:
     this->ae = ae;
     this->weights_per_problem = all.weights_per_problem;
     audit = all.audit;
+    model_to_stdout = all.model_to_stdout;
+    feature_name_map = all.feature_name_map;
     listNameSpace();
   }
 

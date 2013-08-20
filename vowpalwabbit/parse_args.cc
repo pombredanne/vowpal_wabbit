@@ -145,7 +145,8 @@ vw* parse_args(int argc, char *argv[])
 
     ("sort_features", "turn this on to disregard order in which features have been defined. This will lead to smaller cache sizes")
     ("ngram", po::value< vector<string> >(), "Generate N grams")
-    ("skips", po::value< vector<string> >(), "Generate skips in N grams. This in conjunction with the ngram tag can be used to generate generalized n-skip-k-gram.");
+    ("skips", po::value< vector<string> >(), "Generate skips in N grams. This in conjunction with the ngram tag can be used to generate generalized n-skip-k-gram.")
+    ("model_to_stdout", "Output model to stdout instead of to a file");
 
   //po::positional_options_description p;
   // Be friendly: if -d was left out, treat positional param as data file
@@ -544,6 +545,11 @@ vw* parse_args(int argc, char *argv[])
 
   if (vm.count("audit"))
     all->audit = true;
+
+  if (vm.count("model_to_stdout")) {
+    all->model_to_stdout = true;
+    all->feature_name_map = new v_hashmap< v_array<char>, v_hashmap<size_t, v_array<char> >* >(256, NULL, NULL);
+  }
 
   if (vm.count("sendto"))
     all->l = SENDER::setup(*all, vm, all->pairs);

@@ -9,6 +9,7 @@ license as described in the file LICENSE.
 #include <stdint.h>
 #include <cstdio>
 #include "v_array.h"
+#include "v_hashmap.h";
 #include "parse_primitives.h"
 #include "loss_functions.h"
 #include "comp_io.h"
@@ -245,6 +246,10 @@ struct vw {
   regressor reg;
 
   size_t max_examples; // for TLC
+
+  bool model_to_stdout;
+  // namespace -> feature names
+  v_hashmap< v_array<char>, v_hashmap< size_t, v_array<char> >* > *feature_name_map;
 
   vw();
 };

@@ -11,6 +11,7 @@ struct vw;
 struct sl_t {
   void* sldata;
   void (*save_loader)(void* sldata, io_buf&, bool read, bool text);
+  void (*print_model_as_json)(void* sldata, example* superexample);
 };
 
 struct learner {
@@ -27,6 +28,7 @@ public:
   inline void finish() { finisher(data); }
   inline void drive(vw* all) { driver(all, data); }
   inline void save_load(io_buf& io, bool read, bool text) { sl.save_loader(sl.sldata, io, read, text); }
+  inline void print_model_as_json(example* superexample) { sl.print_model_as_json(sl.sldata, superexample); }
 
   learner(void *dat, void (*d)(vw* all, void* data), void (*l)(void* data, example*),   void (*f)(void* data), sl_t s)
   {

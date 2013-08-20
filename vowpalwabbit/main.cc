@@ -7,6 +7,7 @@ license as described in the file LICENSE.
 #include <math.h>
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <float.h>
 #include <time.h>
 #ifdef _WIN32
@@ -89,6 +90,31 @@ int main(int argc, char *argv[])
 	cerr << endl << "total queries = " << all->sd->queries << endl;
       cerr << endl;
     }
+
+  if (all->model_to_stdout) {
+    ostringstream super_example_builder;
+    super_example_builder << "1";
+
+    for (v_hashmap< v_array<char>, v_hashmap< size_t, v_array<char> >* >::hash_elem* e
+            = all->feature_name_map->dat.begin;
+         e != all->feature_name_map->dat.end_array; e++) {
+      if (e->occupied) {
+        super_example_builder << " |" << string(e->key.begin);
+        for(v_hashmap< size_t, v_array<char> >::hash_elem* e2 = e->val->dat.begin;
+            e2 != e->val->dat.end_array; e2++) {
+          if (e2->occupied) {
+            super_example_builder << " " << e2->val.begin << ":1";
+          }
+        }
+      }
+    }
+
+    char* super_ex_line = const_cast<char*>(super_example_builder.str().c_str());
+
+    all->audit = true;
+    example *ex = VW::read_example(*all, super_ex_line);
+    all->l.print_model_as_json(ex);
+  }
   
   VW::finish(*all);
   
