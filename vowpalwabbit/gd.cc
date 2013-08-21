@@ -750,9 +750,9 @@ void print_model_as_json(void* data, example* superex)
         first_feature = false;
 
       if (a != NULL)
-        printf("%s^%s:%f", a->space, a->feature, weights[index]);
+        printf("\"%s^%s\":%f", a->space, a->feature, weights[index]);
       else
-        printf("Constant:%f", weights[index]);
+        printf("\"Constant\":%f", weights[index]);
     }
   }
 
