@@ -109,10 +109,17 @@ int main(int argc, char *argv[])
       }
     }
 
+    // for some reason, VW::read_example uses some of the same memory as
+    // whatever super_ex_line gets build using (wtf, I know) and ends up
+    // overwriting something...not sure how to deal with this so I'm just
+    // copying super_ex_line into new memory and praying for the best
+
     char* super_ex_line = const_cast<char*>(super_example_builder.str().c_str());
+    char bug_avoidance_hack[2048];
+    strcpy(bug_avoidance_hack, super_ex_line);
 
     all->audit = true;
-    example *ex = VW::read_example(*all, super_ex_line);
+    example *ex = VW::read_example(*all, bug_avoidance_hack);
     all->l.print_model_as_json(ex);
   }
   
