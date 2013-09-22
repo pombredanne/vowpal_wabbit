@@ -92,34 +92,29 @@ int main(int argc, char *argv[])
     }
 
   if (all->model_to_stdout) {
-    ostringstream super_example_builder;
-    super_example_builder << "1";
+    char super_example[4096];
+    strcpy(super_example, "1");
 
     for (v_hashmap< v_array<char>, v_hashmap< size_t, v_array<char> >* >::hash_elem* e
             = all->feature_name_map->dat.begin;
          e != all->feature_name_map->dat.end_array; e++) {
       if (e->occupied) {
-        super_example_builder << " |" << string(e->key.begin);
+        strcat(super_example, " |");
+        if (strcmp(e->key.begin, ":") != 0) {
+          strcat(super_example, e->key.begin);
+        }
         for(v_hashmap< size_t, v_array<char> >::hash_elem* e2 = e->val->dat.begin;
             e2 != e->val->dat.end_array; e2++) {
           if (e2->occupied) {
-            super_example_builder << " " << e2->val.begin << ":1";
+            strcat(super_example, " ");
+            strcat(super_example, e2->val.begin);
           }
         }
       }
     }
 
-    // for some reason, VW::read_example uses some of the same memory as
-    // whatever super_ex_line gets build using (wtf, I know) and ends up
-    // overwriting something...not sure how to deal with this so I'm just
-    // copying super_ex_line into new memory and praying for the best
-
-    char* super_ex_line = const_cast<char*>(super_example_builder.str().c_str());
-    char bug_avoidance_hack[2048];
-    strcpy(bug_avoidance_hack, super_ex_line);
-
     all->audit = true;
-    example *ex = VW::read_example(*all, bug_avoidance_hack);
+    example *ex = VW::read_example(*all, super_example);
     all->l.print_model_as_json(ex);
   }
   

@@ -724,39 +724,85 @@ void save_load(void* data, io_buf& model_file, bool read, bool text)
     }
 }
 
+void feature_name_value(vw *all, vector<string_value> *features, feature *f, audit_data *a, string prepend, size_t offset) {
+  size_t index = (f->weight_index + offset) & all->reg.weight_mask;
+  // int value in model is: index/stride & all->parse_mask
+  ostringstream feature_name;
+  if (a != NULL) {
+    feature_name << prepend;
+    if (a->space != NULL && strcmp(a->space, " ") != 0)
+      feature_name << a->space << "^";
+    feature_name << a->feature;
+  } else {
+    feature_name << "Constant";
+  }
+
+  string_value sv = {all->reg.weight_vector[index], feature_name.str()};
+  features->push_back(sv);
+}
+
 void print_model_as_json(void* data, example* superex)
 {
   gd* g = (gd*) data;
   vw* all = g->all;
-  weight* weights = all->reg.weight_vector;
   //size_t stride = all->reg.stride;
 
-  printf("{");
+  vector<string_value> features;
+  string empty;
+  char feature_name[256];
 
-  bool first_feature = true;
+  // linear features
   for (unsigned char* i = superex->indices.begin; i != superex->indices.end; i++) {
     v_array<feature>& fs = superex->atomics[*i];
     v_array<audit_data>& as = superex->audit_features[*i];
 
     for (size_t j = 0; j< fs.size(); j++) {
-      feature *f = &(fs[j]);
-      audit_data *a = &(as[j]);
-      size_t index = f->weight_index & all->reg.weight_mask;
-      // int value in model is: index/stride & all->parse_mask
-
-      if (!first_feature)
-        printf(",");
-      else
-        first_feature = false;
-
-      if (a != NULL)
-        printf("\"%s^%s\":%f", a->space, a->feature, weights[index]);
-      else
-        printf("\"Constant\":%f", weights[index]);
+      feature_name_value(all, &features, &fs[j], &as[j], empty, 0);
     }
   }
 
-  printf("}\n");
+  // quadratic features
+  for (vector<string>::iterator i = all->pairs.begin(); i != all->pairs.end(); i++)  {
+    int fst = (*i)[0];
+    int snd = (*i)[1];
+
+    for (size_t j = 0; j < superex->atomics[fst].size(); j++) {
+      if (superex->audit_features[fst].size() > 0) {
+        audit_data *left_audit = & superex->audit_features[fst][j];
+        feature *left_feature = & superex->atomics[fst][j];
+        v_array<feature>& right_features = superex->atomics[snd];
+        v_array<audit_data>& right_audit = superex->audit_features[snd];
+
+        size_t halfhash = quadratic_constant * left_feature->weight_index;
+
+        ostringstream tempstream;
+        if (left_audit != NULL) {
+          if (left_audit->space != NULL && strcmp(left_audit->space, " ") != 0)
+            tempstream << left_audit->space << "^";
+          tempstream << left_audit->feature << "^";
+        }
+        string prepend = tempstream.str();
+
+        for (size_t k = 0; k < right_features.size(); k++) {
+          feature_name_value(all, &features, &right_features[k], &right_audit[k], prepend, halfhash);
+        }
+      }
+    }
+  }
+
+  sort(features.begin(), features.end());
+
+  bool first_feature = true;
+  cout << "{";
+  for (vector<string_value>::iterator sv = features.begin(); sv!= features.end(); sv++) {
+    if (first_feature)
+      first_feature = false;
+    else
+      cout << ",";
+
+    cout << "\"" << sv->s << "\":" << sv->v;
+  }
+  cout << "}" << endl;
 }
 
 void driver(vw* all, void* data)

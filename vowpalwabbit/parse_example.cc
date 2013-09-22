@@ -143,7 +143,11 @@ public:
 
         if (model_to_stdout) {
             v_array<char> ns_str;
-            push_many(ns_str, base, strlen(base));
+            if (base == NULL) {
+                push_many(ns_str, ":", 1);
+            } else {
+                push_many(ns_str, base, strlen(base));
+            }
             ns_str.push_back('\0');
 
             v_array<char> fn_str;
