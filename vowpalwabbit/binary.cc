@@ -1,60 +1,34 @@
-#include "oaa.h"
-#include "vw.h"
+#include <float.h>
+#include "reductions.h"
 
-namespace BINARY {
-  struct binary {
-    learner base;
-  };
+template <bool is_learn>
+void predict_or_learn(char&, LEARNER::base_learner& base, example& ec)
+{ if (is_learn)
+    base.learn(ec);
+  else
+    base.predict(ec);
 
-  void learn(void* d, example* ec)
-  {
-    binary* b = (binary*)d;
-    b->base.learn(ec);
-    
-    float prediction = -1;
-    if ( ec->final_prediction > 0)
-      prediction = 1;
-    ec->final_prediction = prediction;
+  if ( ec.pred.scalar > 0)
+    ec.pred.scalar = 1;
+  else
+    ec.pred.scalar = -1;
+
+  if (ec.l.simple.label != FLT_MAX)
+  { if (fabs(ec.l.simple.label) != 1.f)
+      cout << "You are using label " << ec.l.simple.label << " not -1 or 1 as loss function expects!" << endl;
+    else if (ec.l.simple.label == ec.pred.scalar)
+      ec.loss = 0.;
+    else
+      ec.loss = ec.weight;
   }
+}
 
-  void finish(void* d)
-  {
-    binary* b = (binary*)d;
-    b->base.finish();
-    free(b);
-  }
+LEARNER::base_learner* binary_setup(vw& all)
+{ if (missing_option(all, false, "binary", "report loss as binary classification on -1,1"))
+    return nullptr;
 
-  void drive(vw* all, void* d)
-  {
-    example* ec = NULL;
-    while ( true )
-      {
-        if ((ec = VW::get_example(all->p)) != NULL)//semiblocking operation.
-          {
-            learn(d, ec);
-	    OAA::output_example(*all, ec);
-	    VW::finish_example(*all, ec);
-          }
-        else if (parser_done(all->p))
-	  return;
-        else 
-          ;
-      }
-  }
-
-  learner setup(vw& all, std::vector<std::string>&opts, po::variables_map& vm, po::variables_map& vm_file)
-  {
-    if (!vm_file.count("binary")) 
-      {
-	std::stringstream ss;
-	ss << " --binary ";
-	all.options_from_file.append(ss.str());
-      }
-
-    all.sd->binary_label = true;
-    binary* data = (binary*)calloc(1,sizeof(binary));
-    data->base = all.l;
-    learner l(data, drive, learn, finish, all.l.sl);
-    return l;
-  }
+  LEARNER::learner<char>& ret =
+    LEARNER::init_learner<char>(nullptr, setup_base(all),
+                                predict_or_learn<true>, predict_or_learn<false>);
+  return make_base(ret);
 }

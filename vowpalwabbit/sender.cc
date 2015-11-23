@@ -16,121 +16,94 @@
 #include <netdb.h>
 #endif
 #include "io_buf.h"
-#include "parse_args.h"
 #include "cache.h"
-#include "simple_label.h"
 #include "network.h"
-#include "vw.h"
+#include "reductions.h"
 
-using namespace std;
+struct sender
+{ io_buf* buf;
+  int sd;
+  vw* all;//loss ring_size others
+  example** delay_ring;
+  size_t sent_index;
+  size_t received_index;
+};
 
-namespace SENDER {
-  struct sender {
-    io_buf* buf;
-    learner base;
-    int sd;
-  };
-
-  void open_sockets(sender& s, string host)
-{
-  s.sd = open_socket(host.c_str());
+void open_sockets(sender& s, string host)
+{ s.sd = open_socket(host.c_str());
   s.buf = new io_buf();
   s.buf->files.push_back(s.sd);
 }
 
-  void send_features(io_buf *b, example* ec, uint32_t mask)
-{
-  // note: subtracting 1 b/c not sending constant
-  output_byte(*b,(unsigned char) (ec->indices.size()-1));
-  
-  for (unsigned char* i = ec->indices.begin; i != ec->indices.end; i++) {
-    if (*i == constant_namespace)
+void send_features(io_buf *b, example& ec, uint32_t mask)
+{ // note: subtracting 1 b/c not sending constant
+  output_byte(*b,(unsigned char) (ec.indices.size()-1));
+
+  for (unsigned char* i = ec.indices.begin; i != ec.indices.end; i++)
+  { if (*i == constant_namespace)
       continue;
-    output_features(*b, *i, ec->atomics[*i].begin, ec->atomics[*i].end, mask);
+    output_features(*b, *i, ec.atomics[*i].begin, ec.atomics[*i].end, mask);
   }
   b->flush();
 }
 
-  void save_load(void* d, io_buf& model_file, bool read, bool text) {}
+void receive_result(sender& s)
+{ float res, weight;
 
-  void drive_send(vw* all, void* d)
-{
-  sender* s = (sender*)d;
-  example* ec = NULL;
-  v_array<char> null_tag;
-  null_tag.erase();
+  get_prediction(s.sd,res,weight);
+  example& ec = *s.delay_ring[s.received_index++ % s.all->p->ring_size];
+  ec.pred.scalar = res;
 
-  example** delay_ring = (example**) calloc(all->p->ring_size, sizeof(example*));
-  size_t sent_index =0;
-  size_t received_index=0;
+  label_data& ld = ec.l.simple;
+  ec.loss = s.all->loss->getLoss(s.all->sd, ec.pred.scalar, ld.label) * ec.weight;
 
-  bool parser_finished = false;
-  while ( true )
-    {//this is a poor man's select operation.
-      if (received_index + all->p->ring_size == sent_index || (parser_finished & (received_index != sent_index)))
-	{
-	  float res, weight;
-	  get_prediction(s->sd,res,weight);
-	  
-	  ec=delay_ring[received_index++ % all->p->ring_size];
-	  label_data* ld = (label_data*)ec->ld;
-	  
-	  ec->final_prediction = res;
-	  
-	  ec->loss = all->loss->getLoss(all->sd, ec->final_prediction, ld->label) * ld->weight;
-	  
-	  return_simple_example(*all, ec);
-	}
-      else if ((ec = VW::get_example(all->p)) != NULL && !command_example(all,ec))//semiblocking operation.
-        {
-
-          label_data* ld = (label_data*)ec->ld;
-          all->set_minmax(all->sd, ld->label);
-	  simple_label.cache_label(ld, *s->buf);//send label information.
-	  cache_tag(*s->buf, ec->tag);
-	  send_features(s->buf,ec, all->parse_mask);
-	  delay_ring[sent_index++ % all->p->ring_size] = ec;
-        }
-      else if (parser_done(all->p))
-        { //close our outputs to signal finishing.
-	  parser_finished = true;
-	  if (received_index == sent_index)
-	    {
-	      shutdown(s->buf->files[0],SHUT_WR);
-	      s->buf->files.delete_v();
-	      s->buf->space.delete_v();
-	      free(delay_ring);
-	      return;
-	    }
-	}
-      else 
-	;
-    }
-  return;
+  return_simple_example(*(s.all), nullptr, ec);
 }
-  void learn(void* d, example*ec) { cout << "sender learn can not be used under reduction" << endl; }
-  void finish(void* d) 
-  { 
-    sender* s = (sender*)d;
-    delete s->buf;
-    s->base.finish();
-    free(s);
+
+void learn(sender& s, LEARNER::base_learner&, example& ec)
+{ if (s.received_index + s.all->p->ring_size / 2 - 1 == s.sent_index)
+    receive_result(s);
+
+  s.all->set_minmax(s.all->sd, ec.l.simple.label);
+  s.all->p->lp.cache_label(&ec.l, *s.buf);//send label information.
+  cache_tag(*s.buf, ec.tag);
+  send_features(s.buf,ec, (uint32_t)s.all->parse_mask);
+  s.delay_ring[s.sent_index++ % s.all->p->ring_size] = &ec;
+}
+
+void finish_example(vw&, sender&, example&) {}
+
+void end_examples(sender& s)
+{ //close our outputs to signal finishing.
+  while (s.received_index != s.sent_index)
+    receive_result(s);
+  shutdown(s.buf->files[0],SHUT_WR);
+}
+
+void finish(sender& s)
+{ s.buf->files.delete_v();
+  s.buf->space.delete_v();
+  free(s.delay_ring);
+  delete s.buf;
+}
+
+LEARNER::base_learner* sender_setup(vw& all)
+{ if (missing_option<string, true>(all, "sendto", "send examples to <host>"))
+    return nullptr;
+
+  sender& s = calloc_or_throw<sender>();
+  s.sd = -1;
+  if (all.vm.count("sendto"))
+  { string host = all.vm["sendto"].as< string >();
+    open_sockets(s, host);
   }
 
-  learner setup(vw& all, po::variables_map& vm, vector<string> pairs)
-{
-  sender* s = (sender*)calloc(1,sizeof(sender));
-  s->sd = -1;
-  if (vm.count("sendto"))
-    {      
-      vector<string> hosts = vm["sendto"].as< vector<string> >();
-      open_sockets(*s, hosts[0]);
-    }
+  s.all = &all;
+  s.delay_ring = calloc_or_throw<example*>(all.p->ring_size);
 
-  s->base = all.l;
-  sl_t sl = {NULL, save_load};
-  learner l(s,drive_send,learn,finish,sl);
-  return l;
-}
-
+  LEARNER::learner<sender>& l = init_learner(&s, learn, 1);
+  l.set_finish(finish);
+  l.set_finish_example(finish_example);
+  l.set_end_examples(end_examples);
+  return make_base(l);
 }

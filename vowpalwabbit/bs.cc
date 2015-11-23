@@ -5,334 +5,246 @@ license as described in the file LICENSE.
  */
 #include <float.h>
 #include <math.h>
-#include <stdio.h>
+#include <errno.h>
 #include <sstream>
 #include <numeric>
 #include <vector>
 
-#include "bs.h"
-#include "cache.h"
-#include "v_hashmap.h"
+#include "reductions.h"
 #include "vw.h"
 #include "rand48.h"
+#include "bs.h"
+#include "vw_exception.h"
 
 using namespace std;
+using namespace LEARNER;
 
-namespace BS {
+struct bs
+{ uint32_t B; //number of bootstrap rounds
+  size_t bs_type;
+  float lb;
+  float ub;
+  vector<double> pred_vec;
+  vw* all; // for raw prediction and loss
+};
 
-  struct bs{
-    uint32_t B; //number of bootstrap rounds
-    size_t bs_type;
-    uint32_t increment;
-    uint32_t total_increment;
-    float lb;
-    float ub;
-    vector<double> pred_vec;
-    learner base;
-    vw* all;
-  };
+void bs_predict_mean(vw& all, example& ec, vector<double> &pred_vec)
+{ ec.pred.scalar = (float)accumulate(pred_vec.begin(), pred_vec.end(), 0.0)/pred_vec.size();
+  ec.loss = all.loss->getLoss(all.sd, ec.pred.scalar, ec.l.simple.label) * ec.weight;
+}
 
-  float weight_gen()//sampling from Poisson with rate 1
-  { 
-    float temp = frand48();
-    if(temp<=0.3678794411714423215955) return 0.;
-    if(temp<=0.735758882342884643191)  return 1.;
-    if(temp<=0.919698602928605803989)  return 2.;
-    if(temp<=0.9810118431238461909214) return 3.;
-    if(temp<=0.9963401531726562876545) return 4.;
-    if(temp<=0.9994058151824183070012) return 5.;
-    if(temp<=0.9999167588507119768923) return 6.;
-    if(temp<=0.9999897508033253583053) return 7.;
-    if(temp<=0.9999988747974020309819) return 8.;
-    if(temp<=0.9999998885745216612793) return 9.;
-    if(temp<=0.9999999899522336243091) return 10.;
-    if(temp<=0.9999999991683892573118) return 11.;
-    if(temp<=0.9999999999364022267287) return 12;
-    if(temp<=0.999999999995480147453) return 13.;
-    if(temp<=0.9999999999996999989333) return 14.;
-    if(temp<=0.9999999999999813223654) return 15.;
-    if(temp<=0.9999999999999989050799) return 16.;
-    if(temp<=0.9999999999999999393572) return 17.;
-    if(temp<=0.999999999999999996817)  return 18.;
-    if(temp<=0.9999999999999999998412) return 19.;
-    return 20.;
-  }
+void bs_predict_vote(example& ec, vector<double> &pred_vec)
+{ //majority vote in linear time
+  unsigned int counter = 0;
+  int current_label = 1, init_label = 1;
+  // float sum_labels = 0; // uncomment for: "avg on votes" and getLoss()
+  bool majority_found = false;
+  bool multivote_detected = false; // distinct(votes)>2: used to skip part of the algorithm
+  int* pred_vec_int = new int[pred_vec.size()];
 
-  void bs_predict_mean(vw& all, example* ec, vector<double> &pred_vec)
-  {
-    ec->final_prediction = accumulate(pred_vec.begin(), pred_vec.end(), 0.0)/pred_vec.size();
-    ec->loss = all.loss->getLoss(all.sd, ec->final_prediction, ((label_data*)ec->ld)->label) * ((label_data*)ec->ld)->weight;    
-  }
+  for(unsigned int i=0; i<pred_vec.size(); i++)
+  { pred_vec_int[i] = (int)floor(pred_vec[i]+0.5); // could be added: link(), min_label/max_label, cutoff between true/false for binary
 
-  void bs_predict_vote(vw& all, example* ec, vector<double> &pred_vec)
-  { //majority vote in linear time
-    unsigned int counter = 0;
-    float current_label = 1.;
-    for(unsigned int i=0; i<pred_vec.size(); i++)
-    {
-      if(pred_vec[i] == current_label)
+    if(multivote_detected == false)   // distinct(votes)>2 detection bloc
+    { if(i == 0)
+      { init_label = pred_vec_int[i];
+        current_label = pred_vec_int[i];
+      }
+      else if(init_label != current_label && pred_vec_int[i] != current_label
+              && pred_vec_int[i] != init_label)
+        multivote_detected = true; // more than 2 distinct votes detected
+    }
+
+    if (counter == 0)
+    { counter = 1;
+      current_label = pred_vec_int[i];
+    }
+    else
+    { if(pred_vec_int[i] == current_label)
         counter++;
       else
-      { 
-        if (counter == 0)
-        {
-          counter = 1;
-          current_label = pred_vec[i];
+      { counter--;
+      }
+    }
+  }
+
+  if(counter > 0 && multivote_detected)   // remove this condition for: "avg on votes" and getLoss()
+  { counter = 0;
+    for(unsigned int i=0; i<pred_vec.size(); i++)
+      if(pred_vec_int[i] == current_label)
+      { counter++;
+        // sum_labels += pred_vec[i]; // uncomment for: "avg on votes" and getLoss()
+      }
+    if(counter*2 > pred_vec.size())
+      majority_found = true;
+  }
+
+  if(multivote_detected && majority_found == false)   // then find most frequent element - if tie: smallest tie label
+  { std::sort(pred_vec_int, pred_vec_int+pred_vec.size());
+    int tmp_label = pred_vec_int[0];
+    counter = 1;
+    for(unsigned int i=1, temp_count=1; i<pred_vec.size(); i++)
+    { if(tmp_label == pred_vec_int[i])
+        temp_count++;
+      else
+      { if(temp_count > counter)
+        { current_label = tmp_label;
+          counter = temp_count;
         }
-        else
-          counter--;
+        tmp_label = pred_vec_int[i];
+        temp_count = 1;
       }
-       
-      if(counter==0)
-        current_label = -1;
     }
-    if(counter == 0)//no majority exists
-    {
-      ec->final_prediction = -1;
-      ec->loss = 1.;
-      return;
+    /* uncomment for: "avg on votes" and getLoss()
+    sum_labels = 0;
+    for(unsigned int i=0; i<pred_vec.size(); i++)
+      if(pred_vec_int[i] == current_label)
+        sum_labels += pred_vec[i]; */
+  }
+  // TODO: unique_ptr would also handle exception case
+  delete[] pred_vec_int;
+
+  // ld.prediction = sum_labels/(float)counter; //replace line below for: "avg on votes" and getLoss()
+  ec.pred.scalar = (float)current_label;
+
+  // ec.loss = all.loss->getLoss(all.sd, ld.prediction, ld.label) * ec.weight; //replace line below for: "avg on votes" and getLoss()
+  ec.loss = ((ec.pred.scalar == ec.l.simple.label) ? 0.f : 1.f) * ec.weight;
+}
+
+void print_result(int f, float res, v_array<char> tag, float lb, float ub)
+{ if (f >= 0)
+  { char temp[30];
+    sprintf(temp, "%f", res);
+    std::stringstream ss;
+    ss << temp;
+    print_tag(ss, tag);
+    ss << ' ';
+    sprintf(temp, "%f", lb);
+    ss << temp;
+    ss << ' ';
+    sprintf(temp, "%f", ub);
+    ss << temp;
+    ss << '\n';
+    ssize_t len = ss.str().size();
+    ssize_t t = io_buf::write_file_or_socket(f, ss.str().c_str(), (unsigned int)len);
+    if (t != len)
+      cerr << "write error: " << strerror(errno) << endl;
+  }
+}
+
+void output_example(vw& all, bs& d, example& ec)
+{ label_data& ld = ec.l.simple;
+
+  all.sd->update(ec.test_only, ec.loss, ec.weight, ec.num_features);
+  if (ld.label != FLT_MAX && !ec.test_only)
+    all.sd->weighted_labels += ld.label * ec.weight;
+
+  if(all.final_prediction_sink.size() != 0)//get confidence interval only when printing out predictions
+  { d.lb = FLT_MAX;
+    d.ub = -FLT_MAX;
+    for (unsigned i = 0; i < d.pred_vec.size(); i++)
+    { if(d.pred_vec[i] > d.ub)
+        d.ub = (float)d.pred_vec[i];
+      if(d.pred_vec[i] < d.lb)
+        d.lb = (float)d.pred_vec[i];
     }
-    //will output majority if it exists
-    ec->final_prediction = current_label;
-    if (ec->final_prediction == ((label_data*)ec->ld)->label)
-      ec->loss = 0.;
+  }
+
+  for (int* sink = all.final_prediction_sink.begin; sink != all.final_prediction_sink.end; sink++)
+    print_result(*sink, ec.pred.scalar, ec.tag, d.lb, d.ub);
+
+  print_update(all, ec);
+}
+
+template <bool is_learn>
+void predict_or_learn(bs& d, base_learner& base, example& ec)
+{ vw& all = *d.all;
+  bool shouldOutput = all.raw_prediction > 0;
+
+  float weight_temp = ec.weight;
+
+  stringstream outputStringStream;
+  d.pred_vec.clear();
+
+  for (size_t i = 1; i <= d.B; i++)
+  { ec.weight = weight_temp * (float) BS::weight_gen();
+
+    if (is_learn)
+      base.learn(ec, i-1);
     else
-      ec->loss = 1.;
+      base.predict(ec, i-1);
+
+    d.pred_vec.push_back(ec.pred.scalar);
+
+    if (shouldOutput)
+    { if (i > 1) outputStringStream << ' ';
+      outputStringStream << i << ':' << ec.partial_prediction;
+    }
   }
 
-  void print_result(int f, float res, float weight, v_array<char> tag, float lb, float ub)
-  {
-    if (f >= 0)
-    {
-      char temp[30];
-      sprintf(temp, "%f", res);
-      std::stringstream ss;
-      ss << temp;
-      print_tag(ss, tag);
-      ss << ' ';
-      sprintf(temp, "%f", lb);
-      ss << temp;
-      ss << ' ';
-      sprintf(temp, "%f", ub);
-      ss << temp;
-      ss << '\n';
-      ssize_t len = ss.str().size();
-#ifdef _WIN32
-	  ssize_t t = _write(f, ss.str().c_str(), (unsigned int)len);
-#else
-	  ssize_t t = write(f, ss.str().c_str(), (unsigned int)len);
-#endif
-      if (t != len)
-        cerr << "write error" << endl;
-    }    
+  ec.weight = weight_temp;
+
+  switch(d.bs_type)
+  { case BS_TYPE_MEAN:
+      bs_predict_mean(all, ec, d.pred_vec);
+      break;
+    case BS_TYPE_VOTE:
+      bs_predict_vote(ec, d.pred_vec);
+      break;
+    default:
+      THROW("Unknown bs_type specified: " << d.bs_type);
   }
 
-  void output_example(vw& all, example* ec, bs* d)
-  {
-    if (command_example(&all,ec))
-      return;
+  if (shouldOutput)
+    all.print_text(all.raw_prediction, outputStringStream.str(), ec.tag);
+}
 
-    label_data* ld = (label_data*)ec->ld;
+void finish_example(vw& all, bs& d, example& ec)
+{ output_example(all, d, ec);
+  VW::finish_example(all, &ec);
+}
 
+void finish(bs& d)
+{ d.pred_vec.~vector(); }
 
-   if(ec->test_only)
-    {
-      all.sd->weighted_holdout_examples += ld->weight;//test weight seen
-      all.sd->weighted_holdout_examples_since_last_dump += ld->weight;
-      all.sd->weighted_holdout_examples_since_last_pass += ld->weight;
-      all.sd->holdout_sum_loss += ec->loss;
-      all.sd->holdout_sum_loss_since_last_dump += ec->loss;
-      all.sd->holdout_sum_loss_since_last_pass += ec->loss;//since last pass
+base_learner* bs_setup(vw& all)
+{ if (missing_option<size_t, true>(all, "bootstrap", "k-way bootstrap by online importance resampling"))
+    return nullptr;
+  new_options(all, "Bootstrap options")("bs_type", po::value<string>(),
+                                        "prediction type {mean,vote}");
+  add_options(all);
+
+  bs& data = calloc_or_throw<bs>();
+  data.ub = FLT_MAX;
+  data.lb = -FLT_MAX;
+  data.B = (uint32_t)all.vm["bootstrap"].as<size_t>();
+
+  std::string type_string("mean");
+  if (all.vm.count("bs_type"))
+  { type_string = all.vm["bs_type"].as<std::string>();
+
+    if (type_string.compare("mean") == 0)
+    { data.bs_type = BS_TYPE_MEAN;
+    }
+    else if (type_string.compare("vote") == 0)
+    { data.bs_type = BS_TYPE_VOTE;
     }
     else
-    {
-      all.sd->weighted_examples += ld->weight;
-      all.sd->total_features += ec->num_features;
-      all.sd->sum_loss += ec->loss;
-      all.sd->sum_loss_since_last_dump += ec->loss;
-      all.sd->example_number++;
+    { std::cerr << "warning: bs_type must be in {'mean','vote'}; resetting to mean." << std::endl;
+      data.bs_type = BS_TYPE_MEAN;
     }
-
-    if(all.final_prediction_sink.size() != 0)//get confidence interval only when printing out predictions
-    {
-      d->lb = FLT_MAX;
-      d->ub = -FLT_MAX;
-      for (unsigned i = 0; i < d->pred_vec.size(); i++)
-      {
-        if(d->pred_vec[i] > d->ub)
-          d->ub = d->pred_vec[i];
-        if(d->pred_vec[i] < d->lb)
-          d->lb = d->pred_vec[i];
-      }
-    }
-
-    for (int* sink = all.final_prediction_sink.begin; sink != all.final_prediction_sink.end; sink++)
-      BS::print_result(*sink, ec->final_prediction, 0, ec->tag, d->lb, d->ub);
-  
-    print_update(all, ec);
   }
+  else //by default use mean
+    data.bs_type = BS_TYPE_MEAN;
+  *all.file_options << " --bs_type " << type_string;
 
-  void learn_with_output(bs* d, example* ec, bool shouldOutput)
-  {
-    vw* all = d->all;
-    if (command_example(all,ec))
-      {
-	d->base.learn(ec);
-	return;
-      }
+  data.pred_vec.reserve(data.B);
+  data.all = &all;
 
-    double weight_temp = ((label_data*)ec->ld)->weight;
-  
-    string outputString;
-    stringstream outputStringStream(outputString);
-    d->pred_vec.clear();
+  learner<bs>& l = init_learner(&data, setup_base(all), predict_or_learn<true>,
+                                predict_or_learn<false>, data.B);
+  l.set_finish_example(finish_example);
+  l.set_finish(finish);
 
-    for (size_t i = 1; i <= d->B; i++)
-      {
-        if (i != 1)
-          update_example_indicies(all->audit, ec, d->increment);
-          
-        ((label_data*)ec->ld)->weight = weight_temp * weight_gen();
-
-        d->base.learn(ec);
-
-        d->pred_vec.push_back(ec->final_prediction);
-
-        if (shouldOutput) {
-          if (i > 1) outputStringStream << ' ';
-          outputStringStream << i << ':' << ec->partial_prediction;
-        }
-      }	
-
-    ((label_data*)ec->ld)->weight = weight_temp;
-
-    update_example_indicies(all->audit, ec, -d->total_increment);
-
-    switch(d->bs_type)
-    {
-      case BS_TYPE_MEAN:
-        bs_predict_mean(*all, ec, d->pred_vec);
-        break;
-      case BS_TYPE_VOTE:
-        bs_predict_vote(*all, ec, d->pred_vec);
-        break;
-      default:
-        std::cerr << "Unknown bs_type specified: " << d->bs_type << ". Exiting." << endl;
-        throw exception();
-    }
-
-    if (shouldOutput) 
-      all->print_text(all->raw_prediction, outputStringStream.str(), ec->tag);
-
-  }
-
-  void learn(void* d, example* ec) {
-    learn_with_output((bs*)d, ec, false);
-  }
-
-  void drive(vw* all, void* d)
-  {
-    example* ec = NULL;
-    while ( true )
-      {
-        if ((ec = VW::get_example(all->p)) != NULL)//semiblocking operation.
-          {
-            learn_with_output((bs*)d, ec, all->raw_prediction > 0);
-            if (!command_example(all, ec))
-              BS::output_example(*all, ec, (bs*)d);
-	    VW::finish_example(*all, ec);
-          }
-        else if (parser_done(all->p))
-	  return;
-        else 
-          ;
-      }
-  }
-
-  void finish(void* data)
-  {    
-    bs* o=(bs*)data;
-    o->base.finish();
-    free(o);
-  }
-
-  learner setup(vw& all, std::vector<std::string>&opts, po::variables_map& vm, po::variables_map& vm_file)
-  {
-    bs* data = (bs*)calloc(1, sizeof(bs));
-    data->ub = FLT_MAX;
-    data->lb = -FLT_MAX;
-
-    po::options_description desc("BS options");
-    desc.add_options()
-      ("bs_type", po::value<string>(), "prediction type {mean,vote}");
-
-    po::parsed_options parsed = po::command_line_parser(opts).
-      style(po::command_line_style::default_style ^ po::command_line_style::allow_guessing).
-      options(desc).allow_unregistered().run();
-    opts = po::collect_unrecognized(parsed.options, po::include_positional);
-    po::store(parsed, vm);
-    po::notify(vm);
-
-    po::parsed_options parsed_file = po::command_line_parser(all.options_from_file_argc,all.options_from_file_argv).
-      style(po::command_line_style::default_style ^ po::command_line_style::allow_guessing).
-      options(desc).allow_unregistered().run();
-    po::store(parsed_file, vm_file);
-    po::notify(vm_file);
-
-    if( vm_file.count("bs") ) {
-      data->B = (uint32_t)vm_file["bs"].as<size_t>();
-      if( vm.count("bs") && (uint32_t)vm["bs"].as<size_t>() != data->B )
-        std::cerr << "warning: you specified a different number of actions through --bs than the one loaded from predictor. Pursuing with loaded value of: " << data->B << endl;
-    }
-    else {
-      data->B = (uint32_t)vm["bs"].as<size_t>();
-
-      //append bs with nb_actions to options_from_file so it is saved to regressor later
-      std::stringstream ss;
-      ss << " --bs " << data->B;
-      all.options_from_file.append(ss.str());
-    }
-
-    if (vm.count("bs_type") || vm_file.count("bs_type"))
-    {
-      std::string type_string;
-
-      if(vm_file.count("bs_type")) {
-        type_string = vm_file["bs_type"].as<std::string>();
-        if( vm.count("bs_type") && type_string.compare(vm["bs_type"].as<string>()) != 0)
-          cerr << "You specified a different --bs_type than the one loaded from regressor file. Pursuing with loaded value of: " << type_string << endl;
-      }
-      else {
-        type_string = vm["bs_type"].as<std::string>();
-
-        all.options_from_file.append(" --bs_type ");
-        all.options_from_file.append(type_string);
-      }
-
-      if (type_string.compare("mean") == 0) { 
-        data->bs_type = BS_TYPE_MEAN;
-      }
-      else if (type_string.compare("vote") == 0) {
-        data->bs_type = BS_TYPE_VOTE;
-      }
-      else {
-        std::cerr << "warning: bs_type must be in {'mean','vote'}; resetting to mean." << std::endl;
-        data->bs_type = BS_TYPE_MEAN;
-      }
-    }
-    else {
-      //by default use mean
-      data->bs_type = BS_TYPE_MEAN;
-      all.options_from_file.append(" --bs_type mean");
-    }
-
-    data->pred_vec.reserve(data->B);
-    data->all = &all;
-    data->increment = all.reg.stride * all.weights_per_problem;
-    all.weights_per_problem *= data->B;
-    data->total_increment = data->increment*(data->B-1);
-    data->base = all.l;
-    learner l(data, drive, learn, finish, all.l.sl);
-    return l;
-  }
+  return make_base(l);
 }
