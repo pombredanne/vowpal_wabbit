@@ -23,15 +23,17 @@ struct active_cover
   LEARNER::base_learner* l;
 };
 
-bool dis_test(vw& all, example& ec, float prediction, float threshold)
-{ if(ec.example_t <= 3)
+bool dis_test(vw& all, example& ec, base_learner& base, float prediction, float threshold)
+{ if(all.sd->t + ec.weight <= 3)
   { return true;
   }
 
   // Get loss difference
-  float k = ec.example_t - ec.weight;
-  ec.revert_weight = all.loss->getRevertingWeight(all.sd, prediction, all.eta/powf(k,all.power_t));
-  float loss_delta = ec.revert_weight/k;
+  float middle = 0.f;
+  ec.confidence = fabsf(ec.pred.scalar - middle) / base.sensitivity(ec);
+
+  float k = (float)all.sd->t;
+  float loss_delta = ec.confidence/k;
 
   bool result = (loss_delta <= threshold);
 
@@ -63,7 +65,7 @@ float get_pmin(float sum_loss, float t)
 float query_decision(active_cover& a, base_learner& l, example& ec, float prediction, float pmin, bool in_dis)
 {
 
-  if(ec.example_t <= 3)
+  if(a.all->sd->t + ec.weight <= 3)
   { return 1.f;
   }
 
@@ -105,13 +107,13 @@ void predict_or_learn_active_cover(active_cover& a, base_learner& base, example&
   { vw& all = *a.all;
 
     float prediction = ec.pred.scalar;
-    float t = ec.example_t - ec.weight;
+    float t = (float)a.all->sd->t;
     float ec_input_weight = ec.weight;
     float ec_input_label = ec.l.simple.label;
 
     // Compute threshold defining allowed set A
     float threshold = get_threshold((float)all.sd->sum_loss, t, a.active_c0, a.alpha);
-    bool in_dis =  dis_test(all, ec, prediction, threshold);
+    bool in_dis =  dis_test(all, ec, base, prediction, threshold);
     float pmin = get_pmin((float)all.sd->sum_loss, t);
     float importance = query_decision(a, base, ec, prediction, pmin, in_dis);
 
@@ -132,11 +134,12 @@ void predict_or_learn_active_cover(active_cover& a, base_learner& base, example&
     { // Make sure the loss computation does not include
       // skipped examples
       ec.l.simple.label = FLT_MAX;
+      ec.weight = 0;
     }
 
     // Update the learners in the cover and their weights
     float q2 = 4.f*pmin*pmin;
-    float p, s, cost, cost_delta;
+    float p, s, cost, cost_delta=0;
     float ec_output_label = ec.l.simple.label;
     float ec_output_weight = ec.weight;
     float r = 2.f*threshold*t*a.alpha/a.active_c0/a.beta_scale;
@@ -237,12 +240,14 @@ base_learner* active_cover_setup(vw& all)
   }
 
   if (count(all.args.begin(), all.args.end(),"--lda") != 0)
-  { THROW("error: you can't combine lda and active learning");
+  { free(&data);
+    THROW("error: you can't combine lda and active learning");
   }
 
 
   if (count(all.args.begin(), all.args.end(),"--active") != 0)
-  { THROW("error: you can't use --active_cover and --active at the same time");
+  { free(&data);
+    THROW("error: you can't use --active_cover and --active at the same time");
   }
 
   *all.file_options <<" --active_cover --cover "<< data.cover_size;

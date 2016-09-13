@@ -72,11 +72,11 @@ void binary_print_result(int f, float res, float weight, v_array<char>)
 }
 
 int print_tag(std::stringstream& ss, v_array<char> tag)
-{ if (tag.begin != tag.end)
+{ if (tag.begin() != tag.end())
   { ss << ' ';
-    ss.write(tag.begin, sizeof(char)*tag.size());
+    ss.write(tag.begin(), sizeof(char)*tag.size());
   }
-  return tag.begin != tag.end;
+  return tag.begin() != tag.end();
 }
 
 void print_result(int f, float res, float, v_array<char> tag)
@@ -85,7 +85,7 @@ void print_result(int f, float res, float, v_array<char> tag)
     if (floorf(res) != res)
       sprintf(temp, "%f", res);
     else
-      sprintf(temp, "%d", (uint32_t) res);
+      sprintf(temp, "%.0f", res);
     std::stringstream ss;
     ss << temp;
     print_tag(ss, tag);
@@ -195,8 +195,8 @@ void add_options(vw& all, po::options_description& opts)
   po::store(parsed, new_vm);
   po::notify(new_vm);
 
-  for (po::variables_map::iterator it=new_vm.begin(); it!=new_vm.end(); ++it)
-    all.vm.insert(*it);
+  for (auto& it : new_vm)
+    all.vm.insert(it);
 }
 
 void add_options(vw& all)
@@ -213,8 +213,8 @@ bool no_new_options(vw& all)
   po::store(parsed, new_vm);
   all.opts.add(*all.new_opts);
   delete all.new_opts;
-  for (po::variables_map::iterator it=new_vm.begin(); it!=new_vm.end(); ++it)
-    all.vm.insert(*it);
+  for (auto& it : new_vm)
+    all.vm.insert(it);
 
   if (new_vm.size() == 0) // required are missing;
     return true;
@@ -235,12 +235,13 @@ vw::vw()
 { sd = &calloc_or_throw<shared_data>();
   sd->dump_interval = 1.;   // next update progress dump
   sd->contraction = 1.;
-  sd->max_label = 1.;
-  sd->min_label = 0.;
+  sd->max_label = 0;
+  sd->min_label = 0;
 
   p = new_parser();
   p->emptylines_separate_examples = false;
   p->lp = simple_label;
+  label_type = label_type::simple;
 
   l = nullptr;
   scorer = nullptr;
@@ -252,13 +253,13 @@ vw::vw()
   reduction_stack=v_init<LEARNER::base_learner* (*)(vw&)>();
 
   data_filename = "";
+  delete_prediction = nullptr;
 
   file_options = new std::stringstream;
 
   bfgs = false;
   hessian_on = false;
   active = false;
-  reg.stride_shift = 0;
   num_bits = 18;
   default_bits = true;
   daemon = false;
@@ -273,7 +274,7 @@ vw::vw()
   eta = 0.5; //default learning rate for normalized adaptive updates, this is switched to 10 by default for the other updates (see parse_args.cc)
   numpasses = 1;
 
-  final_prediction_sink.begin = final_prediction_sink.end=final_prediction_sink.end_array = nullptr;
+  final_prediction_sink.begin() = final_prediction_sink.end() = final_prediction_sink.end_array = nullptr;
   raw_prediction = -1;
   print = print_result;
   print_text = print_raw_text;
@@ -321,13 +322,12 @@ vw::vw()
 
   add_constant = true;
   audit = false;
-  reg.weight_vector = nullptr;
+
   pass_length = (size_t)-1;
   passes_complete = 0;
 
   save_per_pass = false;
 
-  multilabel_prediction = false;
   stdin_off = false;
   do_reset_source = false;
   holdout_set_off = true;
@@ -344,8 +344,6 @@ vw::vw()
   // Set by the '--progress <arg>' option and affect sd->dump_interval
   progress_add = false;   // default is multiplicative progress dumps
   progress_arg = 2.0;     // next update progress dump multiplier
-
-  seeded = false; // default is not to share model states
 
   sd->report_multiclass_log_loss = false;
   sd->multiclass_log_loss = 0;
